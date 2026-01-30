@@ -102,13 +102,16 @@ class PolicyAssistant extends Agent
             return "NOTICE: No relevant policy sections were found in the handbook for this specific inquiry.";
         }
 
+        // Map results to readable output showing all scores
         return $chunks->map(function($c) {
-            $relevance = $c->search_rank > 0 ? "Exact Match" : round(1 - $c->distance, 2);
-
-            // CHANGE THIS LINE: Access title via the document relation
             $title = $c->document ? $c->document->title : 'Unknown Document';
+            $semanticScore = round($c->semantic_score ?? 0, 2);
+            $keywordScore = round($c->search_rank ?? 0, 2);
+            $hybridScore = round($c->hybrid_score ?? 0, 2);
 
-            return "[Source: {$title}] (Score: {$relevance})\n{$c->content}";
+            return "[Source: {$title}]\n" .
+                "Keyword Score: {$keywordScore}, Semantic Score: {$semanticScore}, Hybrid Score: {$hybridScore}\n" .
+                "{$c->content}";
         })->implode("\n\n---\n\n");
 
 

@@ -17,24 +17,25 @@ class DocumentChunk extends Model
     /**
      * Scope for Hybrid Search (Vector + Full Text)
      */
-    public function scopeHybridSearch(Builder $query, string $vectorString, string $rawQuery, float $threshold = 0.45)
+    public function scopeHybridSearch(Builder $query, string $vectorString, string $rawQuery, float $threshold = 0.45, float $keywordWeight = 0.7, float $vectorWeight = 0.3)
     {
         return $query
             ->select('document_chunks.*')
-            // Calculate Distance (Vector) and Rank (Text)
             ->selectRaw("
-                (embedding <=> ?::vector) as distance,
-                ts_rank_cd(to_tsvector('english', content), plainto_tsquery('english', ?)) as search_rank
-            ", [$vectorString, $rawQuery])
-            // Thresholding: Must be semantically close OR contain exact keywords
+            ts_rank_cd(to_tsvector('english', content), plainto_tsquery('english', ?)) AS search_rank,
+            1 - (embedding <=> ?::vector) AS semantic_score,
+            (? * ts_rank_cd(to_tsvector('english', content), plainto_tsquery('english', ?)) +
+             ? * (1 - (embedding <=> ?::vector))) AS hybrid_score
+        ", [$rawQuery, $vectorString, $keywordWeight, $rawQuery, $vectorWeight, $vectorString])
             ->where(function ($q) use ($vectorString, $threshold, $rawQuery) {
                 $q->whereRaw("(embedding <=> ?::vector) < ?", [$vectorString, $threshold])
                     ->orWhereRaw("to_tsvector('english', content) @@ plainto_tsquery('english', ?)", [$rawQuery]);
             })
-            // Re-Ranking logic
-            ->orderByDesc('search_rank') // Keyword matches first
-            ->orderBy('distance');       // Then closest semantic matches
+            ->orderByDesc('hybrid_score');
     }
+
+
+
 
     public function document()
     {
