@@ -20,6 +20,8 @@ return new class extends Migration
 
             // 1. Create the vector column first
             $table->vector('embedding', 768)->nullable();
+            $table->json('metadata')->nullable()->after('content');
+
 
             $table->timestamps();
         });

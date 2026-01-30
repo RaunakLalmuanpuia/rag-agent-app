@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useForm, Head } from '@inertiajs/react';
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import ReactMarkdown from 'react-markdown';
+
 export default function Chat({ auth, chat_response, history }) {
     const [messages, setMessages] = useState(history || [
         { role: 'assistant', content: 'Hello! I am your Policy Assistant.' }
@@ -13,14 +14,12 @@ export default function Chat({ auth, chat_response, history }) {
         message: '',
     });
 
-    // Handle new responses coming back from the Agent
     useEffect(() => {
         if (chat_response) {
             setMessages((prev) => [...prev, chat_response]);
         }
     }, [chat_response]);
 
-    // Auto-scroll to bottom on new messages
     useEffect(() => {
         scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, processing]);
@@ -29,7 +28,6 @@ export default function Chat({ auth, chat_response, history }) {
         e.preventDefault();
         if (!data.message.trim() || processing) return;
 
-        // Optimistically add user message to UI
         const userMsg = { role: 'user', content: data.message };
         setMessages((prev) => [...prev, userMsg]);
 
@@ -38,10 +36,35 @@ export default function Chat({ auth, chat_response, history }) {
         });
     };
 
+    // Helper to render category metadata from the assistant
+    const renderMetadata = (content) => {
+        // Check if content contains category/section info using regex
+        const regex = /\[Source: (.*?)\] \(Category: (.*?) \| Section: (.*?) \| Subsection: (.*?)\)\nScores → Semantic: (.*?), Keyword: (.*?), Hybrid: (.*?)\n([\s\S]*)/;
+        const match = content.match(regex);
+
+        if (match) {
+            return (
+                <div className="space-y-2">
+                    <div className="text-sm text-gray-500">
+                        <strong>Document:</strong> {match[1]} | <strong>Category:</strong> {match[2]} | <strong>Section:</strong> {match[3]} | <strong>Subsection:</strong> {match[4]}
+                    </div>
+                    <div className="text-xs text-gray-400">
+                        Scores → Semantic: {match[5]}, Keyword: {match[6]}, Hybrid: {match[7]}
+                    </div>
+                    <div className="prose prose-sm max-w-none break-words text-gray-800">
+                        <ReactMarkdown>{match[8]}</ReactMarkdown>
+                    </div>
+                </div>
+            );
+        }
+
+        // If no metadata found, render normally
+        return <ReactMarkdown>{content}</ReactMarkdown>;
+    };
+
     return (
         <AuthenticatedLayout user={auth.user}>
             <Head title="Policy Assistant" />
-
             <div className="py-12 max-w-4xl mx-auto sm:px-6 lg:px-8 h-[80vh] flex flex-col">
                 <div className="bg-white overflow-hidden shadow-sm sm:rounded-lg flex-grow flex flex-col">
 
@@ -52,18 +75,14 @@ export default function Chat({ auth, chat_response, history }) {
                                 <div className={`max-w-[80%] rounded-lg px-4 py-2 ${
                                     msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-800'
                                 }`}>
-                                    <div className="prose prose-sm max-w-none break-words">
-                                        <ReactMarkdown>
-                                            {typeof msg.content === 'string'
-                                                ? msg.content
-                                                : (msg.content?.[0]?.text || msg.content?.text || JSON.stringify(msg.content))}
-                                        </ReactMarkdown>
-                                    </div>
+                                    {msg.role === 'assistant'
+                                        ? renderMetadata(msg.content)
+                                        : <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                    }
                                 </div>
                             </div>
                         ))}
 
-                        {/* Loading State (Thinking) */}
                         {processing && (
                             <div className="flex justify-start">
                                 <div className="bg-gray-100 text-gray-500 rounded-lg px-4 py-2 text-sm flex items-center gap-2">

@@ -3,72 +3,101 @@
 namespace App\AiAgents;
 
 use LarAgent\Agent;
-use LarAgent\Attributes\Tool;
+use LarAgent\Messages\DeveloperMessage;
 use App\Models\DocumentChunk;
 use Gemini\Laravel\Facades\Gemini;
-use LarAgent\Messages\DeveloperMessage;
-use Illuminate\Support\Facades\DB;
 use Gemini\Enums\TaskType;
 
 class PolicyAssistant extends Agent
 {
     protected $provider = 'gemini';
-    protected  $model = 'gemini-2.5-flash-lite'; // Note: Ensure you use a standard model string
-
+    protected $model = 'gemini-2.5-flash-lite';
     protected $history = 'cache';
-
     protected $temperature = 0.3;
     protected $maxCompletionTokens = 1500;
     protected $sessionKey = 'chat_history';
 
-
     public function __construct()
     {
-        // This passes the provider name ('gemini') to the parent Agent class
         parent::__construct($this->provider);
     }
 
+    /**
+     * Instructions for the AI, now including category prioritization.
+     */
     public function instructions(): string
     {
         return <<<TEXT
-    You are the "Company Compliance & Decision Engine." Your role is to analyze policy snippets and provide clear, actionable guidance.
+You are the "Company Compliance & Decision Engine." Your role is to analyze policy snippets and provide clear, actionable guidance.
 
-    ### MANDATORY PROTOCOL:
-    1. **Search Phase**: Always use the 'searchPolicies' tool first.
-    2. **Conflict Check**: When you receive multiple policy snippets, evaluate if they contradict each other (e.g., the Expense Policy says 30 days, but the Travel Policy says 14 days).
-    3. **Hierarchy of Truth**: If policies conflict, look for dates or versions. If no version is clear, flag the conflict to the user immediately.
-    4. **Decision Support**: Do not just quote text. Tell the user:
-       - What the rule is.
-       - If they are in violation/late.
-       - The exact "Next Step" (who to email, which form to fill).
+### MANDATORY PROTOCOL:
+1. **Search Phase**: Always use the 'searchPolicies' tool first.
+2. **Category Awareness**: You may prioritize or filter results by category (e.g., Leave, Travel, Expense).
+3. **Conflict Check**: If multiple policy snippets conflict, evaluate versions or dates. Flag conflicts to the user if unclear.
+4. **Decision Support**: Provide actionable guidance, not just quotes:
+   - What the rule is.
+   - If the user is in violation or late.
+   - Exact "Next Step" (forms, approvals, emails).
 
-    ### RESPONSE FORMAT:
-    - **Policy Reference**: (Which document you are quoting)
-    - **Status/Assessment**: (e.g., "You are currently 5 days past the deadline")
-    - **⚠️ Conflict Alert**: (Only if policies disagree)
-    - **Action Plan**: (Numbered list of steps)
-    TEXT;
+### RESPONSE FORMAT:
+- **Policy Reference**: Which document you are quoting
+- **Category**: Policy category
+- **Status/Assessment**: e.g., "You are currently 5 days past the deadline"
+- **⚠️ Conflict Alert**: Only if policies disagree
+- **Action Plan**: Numbered steps
+TEXT;
     }
 
-    public function prompt($message)
+    /**
+     * Prompt user query, detect category automatically, and inject relevant context.
+     */
+    public function prompt(string $message)
     {
-        // 1. Search for documents
-        $documents = $this->getRelevantPolicies($message);
+        // 1. Detect category automatically
+        $category = $this->detectCategory($message);
 
-        // 2. If we found documents, inject them into the history as context
+        // 2. Get relevant policies (filtered by category if detected)
+        $documents = $this->getRelevantPolicies($message, $category);
+
         if (!empty($documents)) {
-            $context = "### Context\nUse these snippets to answer the user:\n\n" . $documents;
-
-            // This adds the context specifically for this turn
+            $context = "### Context\nUse these policy snippets to answer the user:\n\n" . $documents;
             $this->chatHistory()->addMessage(new DeveloperMessage($context));
         }
 
         return $message;
     }
 
-    private function getRelevantPolicies(string $query): string
+    /**
+     * Automatic category detection from user query using keyword mapping.
+     */
+    private function detectCategory(string $message): ?string
     {
-        // Cache the embedding for 24 hours based on the md5 of the query
+        $keywords = [
+            'Leave' => ['leave', 'vacation', 'sick', 'pto', 'time off'],
+            'Travel' => ['travel', 'trip', 'journey', 'per diem'],
+            'Expense' => ['expense', 'invoice', 'budget'],
+            'Conduct' => ['conduct', 'ethics', 'behavior'],
+        ];
+
+        $messageLower = strtolower($message);
+
+        foreach ($keywords as $category => $terms) {
+            foreach ($terms as $term) {
+                if (str_contains($messageLower, $term)) {
+                    return $category;
+                }
+            }
+        }
+
+        return null; // No specific category detected
+    }
+
+    /**
+     * Retrieve relevant policy chunks using hybrid search with semantic + keyword + metadata.
+     */
+    private function getRelevantPolicies(string $query, ?string $category = null): string
+    {
+        // 1. Compute embedding
         $cacheKey = 'embed_' . md5($query);
 
         $embeddingValues = cache()->remember($cacheKey, now()->addDay(), function() use ($query) {
@@ -78,44 +107,32 @@ class PolicyAssistant extends Agent
         });
 
         $vectorString = '[' . implode(',', $embeddingValues) . ']';
-
-//        $chunks = DocumentChunk::query()
-//            ->join('documents', 'document_chunks.document_id', '=', 'documents.id')
-//            ->select('document_chunks.content', 'documents.title')
-//            ->orderByRaw("embedding <=> ?::vector", [$vectorString])
-//            ->limit(3)
-//            ->get();
-
-        // 2. Settings
         $threshold = 0.45;
 
-        // 3. Hybrid Query
-        // We use a CTE or a complex select to combine semantic distance and keyword matching
-        // Use the model scope
+        // 2. Hybrid Search with optional category filtering
         $chunks = DocumentChunk::with('document')
-            ->hybridSearch($vectorString, $query, $threshold)
+            ->hybridSearch($vectorString, $query, $threshold, 0.7, 0.3, $category)
             ->limit(3)
             ->get();
 
-
         if ($chunks->isEmpty()) {
-            return "NOTICE: No relevant policy sections were found in the handbook for this specific inquiry.";
+            return "NOTICE: No relevant policy sections were found for this inquiry.";
         }
 
-        // Map results to readable output showing all scores
+        // 3. Map results with category & metadata display
         return $chunks->map(function($c) {
             $title = $c->document ? $c->document->title : 'Unknown Document';
-            $semanticScore = round($c->semantic_score ?? 0, 2);
-            $keywordScore = round($c->search_rank ?? 0, 2);
-            $hybridScore = round($c->hybrid_score ?? 0, 2);
+            $category = $c->metadata['category'] ?? 'General';
+            $section = $c->metadata['section'] ?? '';
+            $subsection = $c->metadata['subsection'] ?? '';
 
-            return "[Source: {$title}]\n" .
-                "Keyword Score: {$keywordScore}, Semantic Score: {$semanticScore}, Hybrid Score: {$hybridScore}\n" .
-                "{$c->content}";
+            $semantic = round(1 - $c->distance, 2);
+            $keyword = round($c->search_rank ?? 0, 2);
+            $hybrid = round($c->hybrid_score ?? 0, 2);
+
+            return "[Source: {$title}] (Category: {$category} | Section: {$section} | Subsection: {$subsection})\n" .
+                "Scores → Semantic: {$semantic}, Keyword: {$keyword}, Hybrid: {$hybrid}\n" .
+                $c->content;
         })->implode("\n\n---\n\n");
-
-
     }
-
-
 }
