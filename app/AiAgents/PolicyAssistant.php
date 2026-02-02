@@ -12,7 +12,7 @@ class PolicyAssistant extends Agent
 {
     protected $provider = 'gemini';
     protected $model = 'gemini-2.5-flash-lite';
-    protected $history = 'cache';
+    protected $history = 'session';
     protected $temperature = 0.3;
     protected $maxCompletionTokens = 1500;
     protected $sessionKey = 'chat_history';
@@ -20,6 +20,10 @@ class PolicyAssistant extends Agent
     public function __construct()
     {
         parent::__construct($this->provider);
+
+        if (auth()->check()) {
+            $this->sessionKey = 'chat_history_' . auth()->id();
+        }
     }
 
     /**

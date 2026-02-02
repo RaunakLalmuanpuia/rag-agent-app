@@ -11,8 +11,29 @@ class ChatController extends Controller
     public function index(PolicyAssistant $assistant)
     {
         $history = collect($assistant->chatHistory()->toArray())
-            ->filter(fn($msg) => in_array($msg['role'], ['user', 'assistant']))
-            ->values() // Reset array keys for the frontend
+            ->filter(fn ($msg) => in_array($msg['role'], ['user', 'assistant']))
+            ->map(function ($msg) {
+                $content = '';
+
+                // Assistant message (Gemini format)
+                if (isset($msg['content']['text'])) {
+                    $content = $msg['content']['text'];
+                }
+
+                // User / developer message (array of parts)
+                elseif (is_array($msg['content'])) {
+                    $content = collect($msg['content'])
+                        ->pluck('text')
+                        ->filter()
+                        ->implode("\n");
+                }
+
+                return [
+                    'role' => $msg['role'],
+                    'content' => $content,
+                ];
+            })
+            ->values()
             ->toArray();
 
         return Inertia::render('Chat', [
